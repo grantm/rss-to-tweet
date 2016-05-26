@@ -1,11 +1,26 @@
 #!/usr/bin/perl
+#
+# To install dependencies into a local lib directory run:
+#
+#  sudo apt-get install liblocal-lib-perl cpanminus
+#  perl -Mlocal::lib=$(pwd)/local
+#  eval $(perl -I$(pwd)/local/lib -Mlocal::lib=$(pwd)/local)
+#  cpanm Module::CPANfile
+#  cpanm App::cpanminus
+#  cpanm --installdeps .
+
 
 use 5.010;
 use strict;
 use warnings;
 use autodie;
 
-use FindBin           qw();
+BEGIN {
+    use FindBin;
+    use local::lib "$FindBin::Bin/local";
+    chdir($FindBin::Bin);
+}
+
 use Config::General   qw();
 use LWP::UserAgent    qw();
 use XML::RSS          qw();
