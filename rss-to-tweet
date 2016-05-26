@@ -1,0 +1,244 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use autodie;
+
+use FindBin           qw();
+use File::Spec        qw();
+use Config::General   qw();
+use LWP::UserAgent    qw();
+use XML::RSS          qw();
+use Fcntl             qw(O_RDWR O_CREAT);
+use SDBM_File         qw();
+use Net::Twitter      qw();
+use Storable          qw();
+use Data::Dumper      qw();
+
+use Pod::Usage        qw(pod2usage);
+use Getopt::Long      qw(GetOptions);
+
+binmode(\*STDOUT, ':utf8');
+
+my(%opt, %seen);
+if(!GetOptions(\%opt, 'help|?', 'seen=s', 'dry-run')) {
+    pod2usage(-exitval => 1,  -verbose => 0);
+}
+
+pod2usage(-exitstatus => 0, -verbose => 2) if $opt{help};
+
+my $config  = read_config();
+tie_seen_db();
+
+if(my $url = $opt{seen}) {
+    $seen{$url} = 1;
+}
+else {
+    check_feed_and_tweet();
+}
+
+untie_seen_db();
+
+exit 0;
+
+
+sub read_config {
+    my $config_file = $FindBin::Script . '.config';
+    my %config = Config::General::ParseConfig($config_file);
+    return \%config;
+}
+
+
+sub tie_seen_db {
+    my $seen_file = $FindBin::Script . '.seen';
+    tie(%seen, 'SDBM_File', $seen_file, O_RDWR|O_CREAT, 0600);
+}
+
+
+sub untie_seen_db {
+    untie(%seen);
+}
+
+
+sub check_feed_and_tweet {
+    my $post = find_new_post() or return;
+    post_tweet($post);
+    $seen{ $post->{url} } = 1;
+}
+
+
+sub find_new_post {
+    my $xml  = get_rss_xml()            or return;
+    my $post = extract_first_item($xml) or return;
+    return if $seen{ $post->{url} };
+    return $post;
+}
+
+
+sub get_rss_xml {
+    my $url = $config->{rss_url}
+        or die "rss_url is not defined in the config file";
+    my $ua = LWP::UserAgent->new;
+    if($config->{agent}) {
+        $ua->agent( $config->{agent} );
+    }
+    my $resp = $ua->get($url);
+    return unless $resp->is_success;
+    return $resp->decoded_content(charset => 'none');
+}
+
+
+sub extract_first_item {
+    my($xml) = @_;
+    my $rss = XML::RSS->new->parse($xml);
+    my $items = $rss->{items} or return;
+    my $max_items = $config->{max_items} || 3;
+    my @posts;
+    foreach my $item (@$items) {
+        last if $seen{ $item->{link} };
+        unshift @posts, $item;
+        last if @posts >= $max_items;
+    }
+    my $first = $posts[0] or return;
+    return {
+        url   => $first->{link},
+        title => $first->{title},
+    };
+}
+
+
+sub post_tweet {
+    my($post) = @_;
+    my $post_dump = Data::Dumper::Dumper($post);
+    my $text = $post->{title} // die "No title in: $post_dump";
+    my $url  = $post->{url}   // die "No url in: $post_dump";
+
+    my $max_chars = 140 - 26;   # Rough allowance for URL + space
+    $text =~ s{/\A\s+}{};       # strip leading whitespace
+    $text =~ s{/\s+\z}{};       # strip trailing whitespace
+    $text =~ s{/\s\s+}{ }g;     # collapse multiple spaces
+    while(length($text) > $max_chars) {
+        $text =~ s{\s*\x{2026}\z}{}s;
+        next if $text =~ s{\s+\S+\z}{ \x{2026}}s;
+        $text =~ s{.\z}{ \x{2026}}s;
+    }
+
+    $text .= ' ' . $url;
+
+    my $tc = twitter_client() or die "Failed to connect to twitter";
+
+    if($opt{'dry-run'}) {
+        say "Next post: $text";
+        exit;
+    }
+
+    $tc->update({ status => $text });
+
+    say "Posted tweet:\n$text";
+}
+
+
+sub twitter_client {
+    my %ctokens;
+    foreach my $key (qw(consumer_key consumer_secret)) {
+        $ctokens{$key} = $config->{$key} // die "No '$key' in config";
+    }
+
+    my(undef, undef, $datfile) = File::Spec->splitpath($0);
+    $datfile =~ s/([.]\w+)?$/.dat/;
+
+    my $tc = Net::Twitter->new(traits => [qw/API::RESTv1_1/], %ctokens);
+    my $atokens = eval { Storable::retrieve($datfile) } || [];
+    if(! @$atokens) {
+        authorise_app($tc, $datfile);
+        exit;
+    }
+
+    $tc->access_token($atokens->[0]);
+    $tc->access_token_secret($atokens->[1]);
+
+    return $tc;
+}
+
+
+sub authorise_app {
+    my($tc, $datfile) = @_;
+
+    my $auth_url = $tc->get_authorization_url;
+    print "\n1. Authorize the Twitter App at:\n\n"
+        . "   $auth_url\n\n"
+        . "2. Enter the returned PIN to complete the Twitter App authorization process: ";
+
+    my $pin = <STDIN>; # wait for input
+    chomp($pin);
+    print "\n";
+
+    # request_access_token stores the tokens in $tc AND returns them
+    my @atokens = $tc->request_access_token(verifier => $pin);
+
+    # save the access tokens
+    Storable::store(\@atokens, $datfile);
+
+    say "Authorisation complete";
+}
+
+__END__
+
+=head1 NAME
+
+rss-to-tweet - check the RSS feed and tweet top post if new
+
+=head1 SYNOPSIS
+
+  rss-to-tweet [options]
+
+  Options:
+
+   --dry-run      don't actually post - just pretend
+   --seen <url>   mark a URL as seen so it won't be posted
+   --help         detailed help message
+
+=head1 DESCRIPTION
+
+Reads an RSS feed, checks the most recent few items and posts one (the oldest)
+to Twitter if not seen before.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--dry-run>
+
+Don't actually post anything, but work out what would be posted and try the
+twitter login.
+
+=item B<< --seen <url> >>
+
+Mark a URL as 'seen'.  Only posts more recent than this URL will be posted.
+
+=item B<--help> (alias: -?)
+
+Display this documentation.
+
+=back
+
+=head1 CONFIGURATION
+
+Copy/rename the "rss-to-tweet.config-sample" file to "rss-to-tweet.config" and
+then edit to suit.  You'll need to at least add the URL for the RSS feed you
+want to follow and the consumer keys for your twitter app.
+
+The first time you run the script it will give you a URL for authorising the
+Twitter app and will prompt you to enter the PIN which will be supplied when
+you click the URL.
+
+=head1 COPYRIGHT & LICENSE
+
+Copyright 2016 Grant McLean C<< <grantm@cpan.org> >>
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+=cut
+

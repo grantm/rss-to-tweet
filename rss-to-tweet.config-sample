@@ -1,0 +1,27 @@
+# Copy/rename this file to "rss-to-tweet.config" and then edit to suit.
+
+
+# Where should the RSS feed be downloaded from?
+
+rss_url           https://example.wordpress.com/feed/
+
+
+# How many of the most recent entries in the RSS feed should be considered?
+
+max_items         3
+
+
+# If you care what user-agent is used on the RSS request, set it here:
+
+agent             Mozilla/5.0 (Macintosh; Intel Mac OS X 10.11; rv:46.0) Gecko/20100101 Firefox/46.0
+
+
+# Use this URL to register a new twitter app:
+#
+#     https://apps.twitter.com/app/new
+#
+# Then enter the consumer keys for *your* app below:
+
+consumer_key      gwZhUwifwu6cygAf+usMTzUVb
+consumer_secret   Gmi3ZTbeQNAJBlR/JaEwK/RPiwDjZXQGU5NPJf7FI1TYffqHWR
+
