@@ -6,7 +6,6 @@ use warnings;
 use autodie;
 
 use FindBin           qw();
-use File::Spec        qw();
 use Config::General   qw();
 use LWP::UserAgent    qw();
 use XML::RSS          qw();
@@ -145,7 +144,7 @@ sub twitter_client {
         $ctokens{$key} = $config->{$key} // die "No '$key' in config";
     }
 
-    my(undef, undef, $datfile) = File::Spec->splitpath($0);
+    my $datfile = $FindBin::Script . '.dat';
     $datfile =~ s/([.]\w+)?$/.dat/;
 
     my $tc = Net::Twitter->new(traits => [qw/API::RESTv1_1/], %ctokens);
