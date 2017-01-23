@@ -99,7 +99,10 @@ sub get_rss_xml {
     }
     my $resp = $ua->get($url);
     return unless $resp->is_success;
-    return $resp->decoded_content(charset => 'none');
+    return unless $resp->content_type =~ m{\bxml\b};
+    my $xml = $resp->decoded_content(charset => 'none');
+    return unless $xml =~ m{<channel\b};
+    return $xml;
 }
 
 
